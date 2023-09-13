@@ -25,7 +25,7 @@ PAGE_MARGIN_Y = 20       # reduced px to ignore near T/B edge
 
 OUTPUT_ZOOM = 1.0        # how much to zoom output relative to *original* image
 OUTPUT_DPI = 300         # just affects stated DPI of PNG, not appearance
-REMAP_DECIMATE = 16      # downscaling factor for remapping image
+REMAP_DECIMATE = 4      # downscaling factor for remapping image
 
 ADAPTIVE_WINSZ = 55      # window size for adaptive threshold in reduced px
 
@@ -670,7 +670,7 @@ def visualize_spans(name, small, pagemask, spans):
 
     display = small.copy()
     display[mask] = (display[mask]/2) + (regions[mask]/2)
-    display[pagemask == 0] /= 4
+    display[pagemask == 0] = (display[pagemask == 0]/4).astype(int)
 
     debug_show(name, 2, 'spans', display)
 
@@ -746,7 +746,7 @@ def optimize_params(name, small, dstpoints, span_counts, params):
     print('  optimizing', len(params), 'parameters...')
     start = datetime.datetime.now()
     res = scipy.optimize.minimize(objective, params,
-                                  method='Powell')
+                                  method='BFGS')
     end = datetime.datetime.now()
     print('  optimization took', round((end-start).total_seconds(), 2), 'sec.')
     print('  final objective is', res.fun)
@@ -770,7 +770,7 @@ def get_page_dims(corners, rough_dims, params):
         proj_br = project_xy(dims, params)
         return np.sum((dst_br - proj_br.flatten())**2)
 
-    res = scipy.optimize.minimize(objective, dims, method='Powell')
+    res = scipy.optimize.minimize(objective, dims, method='BFGS')
     dims = res.x
 
     print('  got page dims', dims[0], 'x', dims[1])
@@ -878,6 +878,15 @@ def main():
             print('skipping', name, 'because only', len(spans), 'spans')
             continue
 
+        spansnew = []
+        spansnew.append(spans[0])
+        spansnew.append(spans[1])
+        spansnew.append(spans[int(len(spans)/4)])
+        spansnew.append(spans[int(len(spans)/2)])
+        spansnew.append(spans[int(len(spans)/4*3)])
+        spansnew.append(spans[-2])
+        spansnew.append(spans[-1])
+        spans = spansnew
         span_points = sample_spans(small.shape, spans)
 
         print('  got', len(spans), 'spans')
