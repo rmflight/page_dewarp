@@ -20,7 +20,7 @@ import scipy.optimize
 # for some reason pylint complains about cv2 members being undefined :(
 # pylint: disable=E1101
 
-PAGE_MARGIN_X = 50       # reduced px to ignore near L/R edge
+PAGE_MARGIN_X = 0       # reduced px to ignore near L/R edge
 PAGE_MARGIN_Y = 20       # reduced px to ignore near T/B edge
 
 OUTPUT_ZOOM = 1.0        # how much to zoom output relative to *original* image
@@ -825,8 +825,8 @@ def remap_image(name, img, small, page_dims, params):
     pil_image = Image.fromarray(thresh)
     pil_image = pil_image.convert('1')
 
-    threshfile = name + '_thresh.png'
-    pil_image.save(threshfile, dpi=(OUTPUT_DPI, OUTPUT_DPI))
+    #threshfile = name + '_thresh.png'
+    pil_image.save(name, dpi=(OUTPUT_DPI, OUTPUT_DPI))
 
     if DEBUG_LEVEL >= 1:
         height = small.shape[0]
@@ -835,89 +835,82 @@ def remap_image(name, img, small, page_dims, params):
                              interpolation=cv2.INTER_AREA)
         debug_show(name, 6, 'output', display)
 
-    return threshfile
+    return name
 
 
 def main():
 
     if len(sys.argv) < 2:
-        print('usage:', sys.argv[0], 'IMAGE1 [IMAGE2 ...]')
+        print('usage:', sys.argv[0], 'imginput imgoutput')
         sys.exit(0)
 
     if DEBUG_LEVEL > 0 and DEBUG_OUTPUT != 'file':
         cv2.namedWindow(WINDOW_NAME)
 
-    outfiles = []
 
-    for imgfile in sys.argv[1:]:
+    imgfile = sys.argv[1]
+    imgout = sys.argv[2]
+    
+    img = cv2.imread(imgfile)
+    small = resize_to_screen(img)
+    basename = os.path.basename(imgfile)
+    name, _ = os.path.splitext(basename)
 
-        img = cv2.imread(imgfile)
-        small = resize_to_screen(img)
-        basename = os.path.basename(imgfile)
-        name, _ = os.path.splitext(basename)
+    print('loaded', basename, 'with size', imgsize(img))
+    print('and resized to', imgsize(small))
 
-        print('loaded', basename, 'with size', imgsize(img))
-        print('and resized to', imgsize(small))
+    if DEBUG_LEVEL >= 3:
+        debug_show(name, 0.0, 'original', small)
 
-        if DEBUG_LEVEL >= 3:
-            debug_show(name, 0.0, 'original', small)
+    pagemask, page_outline = get_page_extents(small)
 
-        pagemask, page_outline = get_page_extents(small)
+    cinfo_list = get_contours(name, small, pagemask, 'text')
+    spans = assemble_spans(name, small, pagemask, cinfo_list)
 
-        cinfo_list = get_contours(name, small, pagemask, 'text')
-        spans = assemble_spans(name, small, pagemask, cinfo_list)
+    if len(spans) < 3:
+        print('  detecting lines because only', len(spans), 'text spans')
+        cinfo_list = get_contours(name, small, pagemask, 'line')
+        spans2 = assemble_spans(name, small, pagemask, cinfo_list)
+        if len(spans2) > len(spans):
+            spans = spans2
 
-        if len(spans) < 3:
-            print('  detecting lines because only', len(spans), 'text spans')
-            cinfo_list = get_contours(name, small, pagemask, 'line')
-            spans2 = assemble_spans(name, small, pagemask, cinfo_list)
-            if len(spans2) > len(spans):
-                spans = spans2
+    if len(spans) < 1:
+        print('skipping', name, 'because only', len(spans), 'spans')
+        
+    spansnew = []
+    spansnew.append(spans[0])
+    spansnew.append(spans[1])
+    spansnew.append(spans[int(len(spans)/4)])
+    spansnew.append(spans[int(len(spans)/2)])
+    spansnew.append(spans[int(len(spans)/4*3)])
+    spansnew.append(spans[-2])
+    spansnew.append(spans[-1])
+    spans = spansnew
+    span_points = sample_spans(small.shape, spans)
 
-        if len(spans) < 1:
-            print('skipping', name, 'because only', len(spans), 'spans')
-            continue
+    print('  got', len(spans), 'spans')
+    print('with', sum([len(pts) for pts in span_points]), 'points.')
 
-        spansnew = []
-        spansnew.append(spans[0])
-        spansnew.append(spans[1])
-        spansnew.append(spans[int(len(spans)/4)])
-        spansnew.append(spans[int(len(spans)/2)])
-        spansnew.append(spans[int(len(spans)/4*3)])
-        spansnew.append(spans[-2])
-        spansnew.append(spans[-1])
-        spans = spansnew
-        span_points = sample_spans(small.shape, spans)
+    corners, ycoords, xcoords = keypoints_from_samples(name, small,
+                                                       pagemask,
+                                                       page_outline,
+                                                       span_points)
 
-        print('  got', len(spans), 'spans')
-        print('with', sum([len(pts) for pts in span_points]), 'points.')
+    rough_dims, span_counts, params = get_default_params(corners,
+                                                         ycoords, xcoords)
 
-        corners, ycoords, xcoords = keypoints_from_samples(name, small,
-                                                           pagemask,
-                                                           page_outline,
-                                                           span_points)
+    dstpoints = np.vstack((corners[0].reshape((1, 1, 2)),) +
+                          tuple(span_points))
 
-        rough_dims, span_counts, params = get_default_params(corners,
-                                                             ycoords, xcoords)
+    params = optimize_params(name, small,
+                             dstpoints,
+                             span_counts, params)
 
-        dstpoints = np.vstack((corners[0].reshape((1, 1, 2)),) +
-                              tuple(span_points))
+    page_dims = get_page_dims(corners, rough_dims, params)
 
-        params = optimize_params(name, small,
-                                 dstpoints,
-                                 span_counts, params)
+    outfile = remap_image(imgout, img, small, page_dims, params)
 
-        page_dims = get_page_dims(corners, rough_dims, params)
-
-        outfile = remap_image(name, img, small, page_dims, params)
-
-        outfiles.append(outfile)
-
-        print('  wrote', outfile)
-        print
-
-    print('to convert to PDF (requires ImageMagick):')
-    print('  convert -compress Group4 ' + ' '.join(outfiles) + ' output.pdf')
+    print('  wrote', imgout)
 
 
 if __name__ == '__main__':
